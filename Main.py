@@ -80,43 +80,67 @@ def send_email_with_images(image_paths):
         print("Failed to send email:", e)
         return False
 
-def prepare_and_send_three_images(track_id, current_frame, current_ts, wait_time=1.0):
-    base = os.path.join("intruder_captures", f"intruder_{track_id}_{int(current_ts)}")
-    path_during = f"{base}.jpg"
-    path_before = f"{base}_before.jpg"
-    path_after = f"{base}_after.jpg"
+def send_email_with_images(images_data):
+    if TEST_MODE:
+        print("TEST MODE - would send email with images in memory")
+        return True
 
-    save_frame_to_path(current_frame, path_during)
+    msg = MIMEMultipart()
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg['Subject'] = f"⚠ Security Alert: Intruder Detected at {current_time}"
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = EMAIL_RECEIVER
+    msg.attach(MIMEText(
+        f"⚠ Intruder detected by your security camera at {current_time}!\n"
+        "See the 3 attached images."
+    ))
 
-    # Before frame (~1.5 second before)
-    target_before_ts = current_ts - 1.5
+    names = ["intruder_before.jpg", "intruder.jpg", "intruder_after.jpg"]
+    for idx, img_data in enumerate(images_data):
+        name = names[idx] if idx < 3 else f"intruder_{idx}.jpg"
+        msg.attach(MIMEImage(img_data, name=name))
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.send_message(msg)
+        print("Email sent successfully.")
+        return True
+    except Exception as e:
+        print("Failed to send email:", e)
+        return False
+
+
+def frame_to_bytes(frame):
+    _, buffer = cv2.imencode('.jpg', frame)
+    return buffer.tobytes()
+
+
+def prepare_and_send_three_images(track_id, current_frame, current_ts, wait_time=2.0):
+    # Before frame (~1 second before)
+    target_before_ts = current_ts - 1.0
     found = _find_closest_frame(target_before_ts)
-    if found:
-        _, before_frame = found
-        save_frame_to_path(before_frame, path_before)
-    else:
-        save_frame_to_path(current_frame, path_before)
+    before_frame = found[1] if found else current_frame
 
-    # Thread for after frame and email
+    during_bytes = frame_to_bytes(current_frame)
+    before_bytes = frame_to_bytes(before_frame)
+
     def after_and_send():
         time.sleep(wait_time)
-        target_after_ts = current_ts + 2
+        target_after_ts = current_ts + wait_time
         found_after = _find_closest_frame(target_after_ts)
         if found_after:
-            _, after_frame = found_after
-            save_frame_to_path(after_frame, path_after)
+            after_frame = found_after[1]
+        elif frame_buffer:
+            after_frame = frame_buffer[-1][1]
         else:
-            if frame_buffer:
-                _, latest_frame = frame_buffer[-1]
-                save_frame_to_path(latest_frame, path_after)
-            else:
-                save_frame_to_path(current_frame, path_after)
+            after_frame = current_frame
 
-        send_email_with_images([path_before, path_during, path_after])
+        after_bytes = frame_to_bytes(after_frame)
+        send_email_with_images([before_bytes, during_bytes, after_bytes])
 
     t = threading.Thread(target=after_and_send, daemon=True)
     t.start()
-
 # ---------------------- Load YOLOv8 ----------------------
 model = YOLO('yolov8n.pt')
 
